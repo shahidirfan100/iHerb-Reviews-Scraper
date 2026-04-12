@@ -1,0 +1,180 @@
+{
+    "actorSpecification": 1,
+    "fields": {
+        "reviewId": {
+            "title": "Review ID",
+            "type": "string",
+            "description": "Unique review identifier"
+        },
+        "productId": {
+            "title": "Product ID",
+            "type": "string",
+            "description": "iHerb product identifier"
+        },
+        "productUrl": {
+            "title": "Product URL",
+            "type": "string",
+            "description": "Product URL"
+        },
+        "reviewTitle": {
+            "title": "Review Title",
+            "type": "string",
+            "description": "Review title"
+        },
+        "reviewText": {
+            "title": "Review Text",
+            "type": "string",
+            "description": "Review body text"
+        },
+        "rating": {
+            "title": "Rating",
+            "type": "number",
+            "description": "Rating on a 1 to 5 scale"
+        },
+        "verifiedPurchase": {
+            "title": "Verified Purchase",
+            "type": "boolean",
+            "description": "Whether review is from a verified purchase"
+        },
+        "postedDate": {
+            "title": "Posted Date",
+            "type": "string",
+            "description": "Review post date in ISO format"
+        },
+        "languageCode": {
+            "title": "Language Code",
+            "type": "string",
+            "description": "Review language code"
+        },
+        "countryCode": {
+            "title": "Country Code",
+            "type": "string",
+            "description": "Country code for reviewer"
+        },
+        "customerNickname": {
+            "title": "Customer Nickname",
+            "type": "string",
+            "description": "Review author nickname"
+        },
+        "helpfulYes": {
+            "title": "Helpful Yes",
+            "type": "number",
+            "description": "Number of helpful upvotes"
+        },
+        "helpfulNo": {
+            "title": "Helpful No",
+            "type": "number",
+            "description": "Number of unhelpful votes"
+        },
+        "reviewImageCount": {
+            "title": "Review Image Count",
+            "type": "number",
+            "description": "Count of images attached to the review"
+        },
+        "reviewImages": {
+            "title": "Review Images",
+            "type": "array",
+            "description": "Image URLs attached to the review"
+        },
+        "scrapedAt": {
+            "title": "Scraped At",
+            "type": "string",
+            "description": "ISO timestamp of extraction"
+        }
+    },
+    "views": {
+        "overview": {
+            "title": "Reviews Overview",
+            "description": "Complete view of scraped product reviews",
+            "transformation": {
+                "fields": [
+                    "reviewId",
+                    "productId",
+                    "productUrl",
+                    "reviewTitle",
+                    "reviewText",
+                    "rating",
+                    "verifiedPurchase",
+                    "postedDate",
+                    "languageCode",
+                    "countryCode",
+                    "customerNickname",
+                    "helpfulYes",
+                    "helpfulNo",
+                    "reviewImageCount",
+                    "reviewImages",
+                    "scrapedAt"
+                ]
+            },
+            "display": {
+                "component": "table",
+                "properties": {
+                    "reviewId": {
+                        "label": "Review ID",
+                        "format": "text"
+                    },
+                    "productId": {
+                        "label": "Product ID",
+                        "format": "text"
+                    },
+                    "productUrl": {
+                        "label": "Product URL",
+                        "format": "link"
+                    },
+                    "reviewTitle": {
+                        "label": "Review Title",
+                        "format": "text"
+                    },
+                    "reviewText": {
+                        "label": "Review Text",
+                        "format": "text"
+                    },
+                    "rating": {
+                        "label": "Rating",
+                        "format": "number"
+                    },
+                    "verifiedPurchase": {
+                        "label": "Verified",
+                        "format": "boolean"
+                    },
+                    "postedDate": {
+                        "label": "Posted Date",
+                        "format": "date"
+                    },
+                    "languageCode": {
+                        "label": "Language",
+                        "format": "text"
+                    },
+                    "countryCode": {
+                        "label": "Country",
+                        "format": "text"
+                    },
+                    "customerNickname": {
+                        "label": "Customer",
+                        "format": "text"
+                    },
+                    "helpfulYes": {
+                        "label": "Helpful Yes",
+                        "format": "number"
+                    },
+                    "helpfulNo": {
+                        "label": "Helpful No",
+                        "format": "number"
+                    },
+                    "reviewImageCount": {
+                        "label": "Image Count",
+                        "format": "number"
+                    },
+                    "reviewImages": {
+                        "label": "Review Images",
+                        "format": "array"
+                    },
+                    "scrapedAt": {
+                        "label": "Scraped At",
+                        "format": "date"
+                    }
+                }
+            }
+        }
+    }
+}

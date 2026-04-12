@@ -1,0 +1,50 @@
+{
+    "title": "iHerb Reviews Scraper Input",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "productUrl": {
+            "title": "Product URL",
+            "type": "string",
+            "description": "iHerb product URL to scrape reviews from.",
+            "editor": "textfield",
+            "default": "https://pk.iherb.com/pr/california-gold-nutrition-bee-propolis-2x-concentrated-extract-500-mg-90-veggie-caps/61839",
+            "prefill": "https://pk.iherb.com/pr/california-gold-nutrition-bee-propolis-2x-concentrated-extract-500-mg-90-veggie-caps/61839"
+        },
+        "productId": {
+            "title": "Product ID (Optional)",
+            "type": "string",
+            "description": "Numeric iHerb product ID. If empty, it is extracted from productUrl.",
+            "editor": "textfield",
+            "default": "",
+            "prefill": ""
+        },
+        "maxReviews": {
+            "title": "Maximum Reviews",
+            "type": "integer",
+            "description": "Maximum number of reviews to scrape (0 = unlimited).",
+            "default": 20,
+            "prefill": 20,
+            "minimum": 0
+        },
+        "pageSize": {
+            "title": "Page Size",
+            "type": "integer",
+            "description": "Number of reviews fetched per API page.",
+            "default": 20,
+            "prefill": 20,
+            "minimum": 1
+        },
+        "proxyConfiguration": {
+            "title": "Proxy Configuration",
+            "type": "object",
+            "description": "Proxy settings for reliable scraping on protected pages.",
+            "editor": "proxy",
+            "default": {
+                "useApifyProxy": true
+            }
+        }
+    },
+    "required": [],
+    "additionalProperties": true
+}

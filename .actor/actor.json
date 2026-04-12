@@ -1,0 +1,21 @@
+{
+    "actorSpecification": 1,
+    "name": "iherb-reviews-scraper",
+    "title": "iHerb Reviews Scraper",
+    "description": "Extract product reviews from iHerb with ratings, review text, reviewer metadata, and country/language context for research, quality monitoring, and analytics.",
+    "version": "1.0",
+    "categories": [
+        "ECOMMERCE",
+        "BUSINESS"
+    ],
+    "meta": {
+        "templateId": "iherb-reviews-scraper",
+        "generatedBy": "GPT-5.3-Codex"
+    },
+    "input": "./input_schema.json",
+    "output": "./output_schema.json",
+    "storages": {
+        "dataset": "./dataset_schema.json"
+    },
+    "dockerfile": "../Dockerfile"
+}
