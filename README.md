@@ -8,7 +8,8 @@ Extract detailed iHerb review data from product pages for market research, produ
 
 - **Review-first extraction** — Collect individual product reviews instead of product listings.
 - **Rich review fields** — Capture title, text, rating, helpful votes, verified purchase status, and review dates.
-- **Reviewer context** — Gather reviewer nickname, profile link, country, and profile-level activity fields.
+- **Reviewer context** — Gather reviewer nickname, profile link, country, badge level, and profile-level activity fields.
+- **Duplicate-safe output** — Skips duplicate review IDs and invalid records missing core content.
 - **Image-aware filtering** — Optionally collect only reviews that include images.
 - **Clean dataset output** — Empty and null-like fields are removed from each item for better downstream analysis.
 
@@ -73,6 +74,10 @@ Each dataset item contains:
 | `reviewerReviewCount` | Number | Reviewer total review count. |
 | `reviewerHelpfulCount` | Number | Reviewer helpful vote count. |
 | `reviewerImageCount` | Number | Reviewer total image count. |
+| `reviewerAnswerCount` | Number | Reviewer Q&A answer count. |
+| `reviewerBadgeName` | String | Reviewer contributor badge name. |
+| `reviewerBadgeTitle` | String | Reviewer contributor badge title. |
+| `reviewerProfileImage` | String | Reviewer profile image URL when available. |
 | `helpfulYes` | Number | Helpful upvotes on review. |
 | `helpfulNo` | Number | Unhelpful votes on review. |
 | `reviewImageCount` | Number | Number of images in this review. |
@@ -139,8 +144,12 @@ Run-level metrics are stored in the default key-value store under `statistics`.
   "customerNickname": "iHerb customer",
   "customerProfileLink": "5073043785990325831",
   "reviewerUsername": "5073043785990325831",
+  "reviewerDisplayName": "iHerb customer",
   "reviewerReviewCount": 37,
   "reviewerHelpfulCount": 3,
+  "reviewerAnswerCount": 2,
+  "reviewerBadgeName": "Bronze",
+  "reviewerBadgeTitle": "Bronze contributor",
   "helpfulYes": 0,
   "helpfulNo": 0,
   "reviewImageCount": 0,

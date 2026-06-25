@@ -26,7 +26,17 @@
 - `https://catalog.app.iherb.com/category/<slug>/products`
   - Rejected for this task: listing/products API, not review extraction
 
+## API scoring (selected endpoint)
+| Factor | Points |
+|---|---|
+| Returns JSON directly | +30 |
+| Has >15 unique fields | +25 |
+| No auth required | +20 |
+| Has pagination support | +15 |
+| Matches or extends current fields | +10 |
+| **Total** | **100** |
+
 ## Transport notes
-- Plain HTTP page fetch is Cloudflare-protected for product pages.
-- Browser session calls via Firefox request context consistently return valid review JSON.
-- Direct fallback HTTP calls can be attempted but should not be primary for this endpoint.
+- The review search API is called through a Playwright Firefox browser session to satisfy PerimeterX anti-bot checks on Apify.
+- Direct HTTP requests are blocked in production; Playwright is used from the start to avoid wasted retry time.
+- Product page HTML is only used for session warmup; review data comes from the JSON API endpoint.
