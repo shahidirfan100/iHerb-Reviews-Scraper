@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import { Actor } from 'apify';
-import { firefox } from 'playwright';
+import { gotScraping } from 'got-scraping';
 
 import log from '@apify/log';
 
@@ -10,37 +10,13 @@ await Actor.init();
 
 const API_HOST = 'https://pk.iherb.com';
 const MAX_RETRIES = 3;
-const API_TIMEOUT_MS = 45000;
-const RETRYABLE_STATUSES = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
-const USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 15.7; rv:147.0) Gecko/20100101 Firefox/147.0',
-    'Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0',
-];
+const API_TIMEOUT_MS = 30000;
 const DEFAULT_SORT_ID = 6;
 const DEFAULT_LANGUAGE_CODE = 'en-US';
 const DEFAULT_COUNTRY_CODE = '';
 const DEFAULT_WITH_IMAGES_ONLY = false;
-const MAX_PAGES_PER_SESSION = 3;
-const MAX_TOTAL_SESSION_ROTATIONS = 100;
-const MAX_SESSION_ROTATIONS_PER_PAGE = 6;
-const SESSION_WARMUP_WAIT_MS = 600;
-const SESSION_QUICK_WARMUP_WAIT_MS = 300;
-const MIN_PAGE_DELAY_MS = 100;
-const MAX_PAGE_DELAY_MS = 350;
-const NAVIGATION_TIMEOUT_MS = 60000;
-
-const BLOCKED_RESOURCE_TYPES = new Set(['image', 'font', 'media', 'stylesheet']);
-const BLOCKED_URL_SNIPPETS = [
-    'google-analytics',
-    'googletagmanager',
-    'doubleclick',
-    'facebook',
-    'adsense',
-    'hotjar',
-    'clarity.ms',
-    'bing.com',
-];
+const MIN_PAGE_DELAY_MS = 200;
+const MAX_PAGE_DELAY_MS = 800;
 
 const SORT_ID_MAP = {
     mostRecent: 6,
@@ -50,6 +26,11 @@ const SORT_ID_MAP = {
     helpful: 4,
     highestRating: 1,
     lowestRating: 2,
+};
+
+const API_HEADERS = {
+    accept: 'application/json',
+    'user-agent': 'okhttp/4.12.0',
 };
 
 async function loadInput() {
@@ -62,7 +43,7 @@ async function loadInput() {
         const localInput = JSON.parse(localInputRaw);
         if (localInput && typeof localInput === 'object') return localInput;
     } catch {
-        // Ignore local input fallback errors and continue with empty object.
+        // Ignore local input fallback errors.
     }
 
     return runtimeInput;
@@ -113,10 +94,6 @@ function stripEmptyFields(record) {
             return true;
         }),
     );
-}
-
-function getRandomUserAgent() {
-    return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
 function shouldCreateProxyConfiguration(config) {
@@ -217,31 +194,6 @@ function normalizeProductUrl(urlInput, resolvedId, idInput) {
     return 'https://www.iherb.com/';
 }
 
-function buildWarmupProductUrl(urlInput, resolvedId, idInput) {
-    const explicitId = toText(idInput).replace(/\D/g, '');
-    const productIdForUrl = explicitId.length >= 4 ? explicitId : resolvedId;
-    if (productIdForUrl) {
-        return `https://www.iherb.com/pr/iherb-product/${productIdForUrl}`;
-    }
-
-    const normalized = normalizeProductUrl(urlInput, resolvedId, idInput);
-    if (!normalized) return `https://www.iherb.com/pr/iherb-product/${resolvedId}`;
-
-    try {
-        const parsed = new URL(normalized);
-        if (/iherb\.com$/i.test(parsed.hostname)) {
-            parsed.hostname = 'www.iherb.com';
-            parsed.search = '';
-            parsed.hash = '';
-            return parsed.toString();
-        }
-    } catch {
-        // Fallback to normalized URL when parsing fails.
-    }
-
-    return normalized;
-}
-
 function buildReviewsEndpoint({ pid, page, size, selectedSortId, selectedLanguageCode, selectedCountryCode, imagesOnly, includeCountryReview }) {
     const params = new URLSearchParams({
         pid,
@@ -271,45 +223,40 @@ async function sleepRandom(minMs, maxMs) {
     await sleep(randomDelay);
 }
 
-async function fetchJsonWithRetry({ apiRequestContext, endpoint, referer, label }) {
+async function fetchWithRetry({ endpoint, proxyUrl, label }) {
     let lastError = null;
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
-            const response = await apiRequestContext.get(endpoint, {
-                headers: {
-                    accept: 'application/json, text/plain, */*',
-                    origin: 'https://pk.iherb.com',
-                    referer,
-                    'x-requested-with': 'XMLHttpRequest',
-                },
-                timeout: API_TIMEOUT_MS,
-                failOnStatusCode: false,
+            const response = await gotScraping.get(endpoint, {
+                headers: API_HEADERS,
+                proxyUrl,
+                http2: false,
+                useHeaderGenerator: false,
+                timeout: { request: API_TIMEOUT_MS },
+                retry: { limit: 0 },
             });
 
-            const status = response.status();
-            const bodyText = await response.text().catch(() => '');
+            const body = typeof response.body === 'string' ? response.body : JSON.stringify(response.body);
 
-            if (response.ok()) {
-                let json;
-                try {
-                    json = JSON.parse(bodyText);
-                } catch {
-                    throw new Error(`${label} returned non-JSON response.`);
-                }
-                return json;
+            let json;
+            try {
+                json = JSON.parse(body);
+            } catch {
+                const isBlocked = body.includes('blockScript') || body.includes('appId');
+                throw new Error(isBlocked
+                    ? `${label} blocked by anti-bot protection.`
+                    : `${label} returned non-JSON response.`);
             }
 
-            const error = new Error(`${label} failed with status ${status}. ${bodyText.slice(0, 200)}`);
-            if (!RETRYABLE_STATUSES.has(status) || attempt === MAX_RETRIES) throw error;
-            lastError = error;
+            return json;
         } catch (error) {
             lastError = error;
             if (attempt === MAX_RETRIES) break;
         }
 
         const waitMs = 1000 * (2 ** (attempt - 1));
-        log.warning(`Retrying ${label} in ${waitMs} ms (attempt ${attempt + 1}/${MAX_RETRIES})`, {
+        log.warning(`Retrying ${label} in ${waitMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`, {
             error: lastError?.message,
         });
         await sleep(waitMs);
@@ -433,19 +380,13 @@ const selectedCountryCode = toText(countryCode);
 const selectedWithImagesOnly = toBoolean(withImagesOnly);
 const selectedWithCountryReview = toBoolean(withCountryReview);
 const normalizedProductUrl = normalizeProductUrl(productUrl, resolvedProductId, productId);
-const warmupProductUrl = buildWarmupProductUrl(productUrl, resolvedProductId, productId);
-const hasProxyConfigurationInput = Object.prototype.hasOwnProperty.call(input, 'proxyConfiguration');
-const primaryProxyConfiguration = await createOptionalProxyConfiguration(proxyConfig);
-const fallbackProxyConfiguration = (!hasProxyConfigurationInput && Actor.isAtHome())
-    ? await createOptionalProxyConfiguration({ useApifyProxy: true })
-    : null;
+const proxyConfiguration = await createOptionalProxyConfiguration(proxyConfig);
 const runStartedAt = Date.now();
 const wantedReviews = maxReviewsLimit === 0 ? Number.POSITIVE_INFINITY : maxReviewsLimit;
 
-log.info('Starting iHerb Reviews scraper (Playwright Firefox session)', {
+log.info('Starting iHerb Reviews scraper (API via got-scraping)', {
     productId: resolvedProductId,
     productUrl: normalizedProductUrl,
-    warmupProductUrl,
     maxReviews: maxReviewsLimit,
     pageSize: pageSizeLimit,
     sortId: selectedSortId,
@@ -453,8 +394,7 @@ log.info('Starting iHerb Reviews scraper (Playwright Firefox session)', {
     countryCode: selectedCountryCode,
     withImagesOnly: selectedWithImagesOnly,
     withCountryReview: selectedWithCountryReview,
-    usesProxy: Boolean(primaryProxyConfiguration),
-    hasProxyFallback: Boolean(fallbackProxyConfiguration),
+    usesProxy: Boolean(proxyConfiguration),
 });
 
 const seenReviewKeys = new Set();
@@ -466,122 +406,6 @@ let finalErrorMessage = null;
 let countryReviews = [];
 let totalReviewCount = null;
 let translatedTotalCount = null;
-let activeProxyConfiguration = primaryProxyConfiguration;
-let sharedBrowser = null;
-
-function shouldAbortRequest(route) {
-    const resourceType = route.request().resourceType();
-    const url = route.request().url();
-
-    if (BLOCKED_RESOURCE_TYPES.has(resourceType)) return true;
-    return BLOCKED_URL_SNIPPETS.some((snippet) => url.includes(snippet));
-}
-
-async function ensureSharedBrowser(forceRelaunch = false) {
-    if (forceRelaunch && sharedBrowser) {
-        await sharedBrowser.close().catch(() => {});
-        sharedBrowser = null;
-    }
-
-    if (!sharedBrowser || !sharedBrowser.isConnected()) {
-        sharedBrowser = await firefox.launch({ headless: true });
-    }
-
-    return sharedBrowser;
-}
-
-async function buildBrowserContext(browser) {
-    const userAgent = getRandomUserAgent();
-    const contextOptions = {
-        userAgent,
-        locale: selectedLanguageCode,
-        viewport: { width: 1366, height: 768 },
-    };
-
-    if (activeProxyConfiguration) {
-        const proxyUrl = await activeProxyConfiguration.newUrl();
-        const parsedProxy = new URL(proxyUrl);
-        contextOptions.proxy = {
-            server: `${parsedProxy.protocol}//${parsedProxy.hostname}${parsedProxy.port ? `:${parsedProxy.port}` : ''}`,
-            username: parsedProxy.username ? decodeURIComponent(parsedProxy.username) : undefined,
-            password: parsedProxy.password ? decodeURIComponent(parsedProxy.password) : undefined,
-        };
-    }
-
-    return browser.newContext(contextOptions);
-}
-
-async function warmupContextPage(page, { quick = false } = {}) {
-    await page.route('**/*', (route) => {
-        if (shouldAbortRequest(route)) return route.abort();
-        return route.continue();
-    });
-
-    await page.goto(warmupProductUrl, {
-        waitUntil: quick ? 'commit' : 'domcontentloaded',
-        timeout: NAVIGATION_TIMEOUT_MS,
-    });
-    await sleep(quick ? SESSION_QUICK_WARMUP_WAIT_MS : SESSION_WARMUP_WAIT_MS);
-}
-
-async function openReviewSession({ quickWarmup = false, forceBrowserRelaunch = false } = {}) {
-    const browser = await ensureSharedBrowser(forceBrowserRelaunch);
-    const context = await buildBrowserContext(browser);
-    const page = await context.newPage();
-
-    await warmupContextPage(page, { quick: quickWarmup });
-
-    return {
-        browser,
-        context,
-        page,
-        referer: page.url() || warmupProductUrl,
-        pagesUsed: 0,
-    };
-}
-
-async function closeReviewSession(session, { closeBrowser = false } = {}) {
-    if (!session) return;
-    await session.page?.close().catch(() => {});
-    await session.context?.close().catch(() => {});
-
-    if (closeBrowser && sharedBrowser) {
-        await sharedBrowser.close().catch(() => {});
-        sharedBrowser = null;
-    }
-}
-
-async function rotateReviewSession(session, { forceBrowserRelaunch = false, quickWarmup = true } = {}) {
-    await closeReviewSession(session);
-    return openReviewSession({ quickWarmup, forceBrowserRelaunch });
-}
-
-async function fetchReviewPageData(pageNumber, existingSession) {
-    const endpoint = buildReviewsEndpoint({
-        pid: resolvedProductId,
-        page: pageNumber,
-        size: pageSizeLimit,
-        selectedSortId,
-        selectedLanguageCode,
-        selectedCountryCode,
-        imagesOnly: selectedWithImagesOnly,
-        includeCountryReview: selectedWithCountryReview,
-    });
-
-    let session = existingSession;
-    if (!session) {
-        session = await openReviewSession();
-    }
-
-    const pageData = await fetchJsonWithRetry({
-        apiRequestContext: session.context.request,
-        endpoint,
-        referer: session.referer,
-        label: `Review API page ${pageNumber}`,
-    });
-
-    return { pageData, session };
-}
 
 function capturePageMetadata(pageData) {
     if (totalReviewCount === null && pageData?.totalCount !== undefined) {
@@ -633,71 +457,39 @@ function processReviewItems(items, pageNumber) {
     return normalized;
 }
 
-let session;
-
 try {
     let pageNumber = 1;
-    let totalSessionRotations = 0;
-    let pageRotationAttempts = 0;
 
     while (totalReviewsScraped < wantedReviews) {
-        if (!session) {
-            session = await openReviewSession({ quickWarmup: totalSessionRotations > 0 });
-            totalSessionRotations += 1;
-        }
+        const endpoint = buildReviewsEndpoint({
+            pid: resolvedProductId,
+            page: pageNumber,
+            size: pageSizeLimit,
+            selectedSortId,
+            selectedLanguageCode,
+            selectedCountryCode,
+            imagesOnly: selectedWithImagesOnly,
+            includeCountryReview: selectedWithCountryReview,
+        });
 
-        if (session.pagesUsed >= MAX_PAGES_PER_SESSION) {
-            log.info(`Rotating browser context after ${session.pagesUsed} API pages to avoid PerimeterX blocks.`);
-            session = await rotateReviewSession(session, { quickWarmup: true });
-            totalSessionRotations += 1;
-        }
-
-        if (totalSessionRotations > MAX_TOTAL_SESSION_ROTATIONS) {
-            throw new Error(`Exceeded maximum total session rotations (${MAX_TOTAL_SESSION_ROTATIONS}) while paginating reviews.`);
+        let proxyUrl;
+        if (proxyConfiguration) {
+            proxyUrl = await proxyConfiguration.newUrl();
         }
 
         let pageData;
         try {
-            const fetchResult = await fetchReviewPageData(pageNumber, session);
-            pageData = fetchResult.pageData;
-            session = fetchResult.session;
+            pageData = await fetchWithRetry({
+                endpoint,
+                proxyUrl,
+                label: `Review API page ${pageNumber}`,
+            });
         } catch (error) {
             finalErrorMessage = error?.message ?? String(error);
-
-            if (finalErrorMessage.includes('status 403')) {
-                pageRotationAttempts += 1;
-
-                if (pageNumber === 1 && pageRotationAttempts >= 3 && !activeProxyConfiguration && fallbackProxyConfiguration) {
-                    activeProxyConfiguration = fallbackProxyConfiguration;
-                    log.warning('Repeated page 1 blocks detected without a configured proxy; switching to Apify Proxy fallback.', {
-                        pageNumber,
-                        pageRotationAttempts,
-                    });
-                }
-
-                if (pageRotationAttempts > MAX_SESSION_ROTATIONS_PER_PAGE) {
-                    throw new Error(`Page ${pageNumber} remained blocked after ${MAX_SESSION_ROTATIONS_PER_PAGE} session refresh attempts.`);
-                }
-
-                log.warning(`Session blocked on page ${pageNumber}; rotating context and retrying immediately.`, {
-                    error: finalErrorMessage,
-                    pageRotationAttempts,
-                });
-                session = await rotateReviewSession(session, {
-                    forceBrowserRelaunch: pageRotationAttempts % 2 === 0,
-                    quickWarmup: true,
-                });
-                totalSessionRotations += 1;
-                continue;
-            }
-
             log.warning(`Review pagination stopped on page ${pageNumber}`, { error: finalErrorMessage });
             break;
         }
 
-        finalErrorMessage = null;
-        pageRotationAttempts = 0;
-        if (session) session.pagesUsed += 1;
         pagesFetched += 1;
         capturePageMetadata(pageData);
 
@@ -729,12 +521,9 @@ try {
         await sleepRandom(MIN_PAGE_DELAY_MS, MAX_PAGE_DELAY_MS);
         pageNumber += 1;
     }
-
 } catch (error) {
     finalErrorMessage = error?.message ?? String(error);
     log.error('Run failed while fetching iHerb review data.', { error: finalErrorMessage });
-} finally {
-    await closeReviewSession(session, { closeBrowser: true });
 }
 
 if (totalReviewsScraped === 0 && finalErrorMessage) {
@@ -751,11 +540,10 @@ const statistics = stripEmptyFields({
     pagesFetched,
     duplicatesSkipped,
     invalidReviewsSkipped,
-    extractionMethod: 'iHerb reviews API (Playwright Firefox session)',
+    extractionMethod: 'iHerb reviews API (got-scraping, okhttp headers)',
     endpoint: `${API_HOST}/ugc/api/review/v2/search`,
     productId: resolvedProductId,
     productUrl: normalizedProductUrl,
-    warmupProductUrl,
     sortId: selectedSortId,
     pageSize: pageSizeLimit,
     languageCode: selectedLanguageCode,
