@@ -15,8 +15,15 @@ const DEFAULT_SORT_ID = 6;
 const DEFAULT_LANGUAGE_CODE = 'en-US';
 const DEFAULT_COUNTRY_CODE = '';
 const DEFAULT_WITH_IMAGES_ONLY = false;
-const MIN_PAGE_DELAY_MS = 200;
-const MAX_PAGE_DELAY_MS = 800;
+const PAGE_SIZE = 20;
+const MIN_PAGE_DELAY_MS = 300;
+const MAX_PAGE_DELAY_MS = 900;
+const RETRY_BASE_DELAY_MS = 2000;
+const BLOCK_RETRY_BASE_DELAY_MS = 4000;
+const ADAPTIVE_DELAY_STEP_MS = 2500;
+const ADAPTIVE_DELAY_MAX_MS = 10000;
+const MAX_CONSECUTIVE_PARTIAL_PAGES = 3;
+const MAX_NO_PROGRESS_PAGES = 5;
 
 const SORT_ID_MAP = {
     mostRecent: 6,
@@ -54,9 +61,8 @@ const {
     productUrl = '',
     productId = '',
     maxReviews = 20,
-    pageSize = 20,
     sortBy = '',
-    sortId = DEFAULT_SORT_ID,
+    sortId = null,
     languageCode = DEFAULT_LANGUAGE_CODE,
     countryCode = DEFAULT_COUNTRY_CODE,
     withImagesOnly = DEFAULT_WITH_IMAGES_ONLY,
@@ -223,46 +229,94 @@ async function sleepRandom(minMs, maxMs) {
     await sleep(randomDelay);
 }
 
-async function fetchWithRetry({ endpoint, proxyUrl, label }) {
+async function rawFetch({ endpoint, proxyUrl }) {
+    const response = await gotScraping.get(endpoint, {
+        headers: API_HEADERS,
+        proxyUrl,
+        http2: false,
+        useHeaderGenerator: false,
+        timeout: { request: API_TIMEOUT_MS },
+        retry: { limit: 0 },
+    });
+
+    return typeof response.body === 'string' ? response.body : JSON.stringify(response.body);
+}
+
+function isBlockResponse(body) {
+    return typeof body === 'string'
+        && (body.includes('blockScript') || body.includes('jsClientSrc') || body.includes('altBlockScript'));
+}
+
+async function fetchPageWithRecovery({ endpoint, getProxyUrl, label }) {
     let lastError = null;
+    let retryCount = 0;
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-        try {
-            const response = await gotScraping.get(endpoint, {
-                headers: API_HEADERS,
-                proxyUrl,
-                http2: false,
-                useHeaderGenerator: false,
-                timeout: { request: API_TIMEOUT_MS },
-                retry: { limit: 0 },
-            });
-
-            const body = typeof response.body === 'string' ? response.body : JSON.stringify(response.body);
-
-            let json;
-            try {
-                json = JSON.parse(body);
-            } catch {
-                const isBlocked = body.includes('blockScript') || body.includes('appId');
-                throw new Error(isBlocked
-                    ? `${label} blocked by anti-bot protection.`
-                    : `${label} returned non-JSON response.`);
-            }
-
-            return json;
-        } catch (error) {
-            lastError = error;
-            if (attempt === MAX_RETRIES) break;
+        let proxyUrl;
+        if (getProxyUrl) {
+            proxyUrl = await getProxyUrl();
         }
 
-        const waitMs = 1000 * (2 ** (attempt - 1));
-        log.warning(`Retrying ${label} in ${waitMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`, {
-            error: lastError?.message,
-        });
-        await sleep(waitMs);
+        let body;
+        try {
+            body = await rawFetch({ endpoint, proxyUrl });
+        } catch (error) {
+            lastError = error;
+            if (attempt < MAX_RETRIES) {
+                retryCount += 1;
+                const waitMs = RETRY_BASE_DELAY_MS * (2 ** (attempt - 1));
+                log.warning(`Retrying ${label} in ${waitMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`, {
+                    error: error?.message,
+                });
+                await sleep(waitMs);
+            }
+            continue;
+        }
+
+        if (isBlockResponse(body)) {
+            lastError = new Error(`${label} blocked by anti-bot protection (PerimeterX).`);
+            if (attempt < MAX_RETRIES) {
+                retryCount += 1;
+                const waitMs = BLOCK_RETRY_BASE_DELAY_MS * (2 ** (attempt - 1));
+                log.warning(`Anti-bot block on ${label}; retrying with fresh proxy in ${waitMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
+                await sleep(waitMs);
+            }
+            continue;
+        }
+
+        let json;
+        try {
+            json = JSON.parse(body);
+        } catch {
+            lastError = new Error(`${label} returned non-JSON response.`);
+            if (attempt < MAX_RETRIES) {
+                retryCount += 1;
+                const waitMs = RETRY_BASE_DELAY_MS * (2 ** (attempt - 1));
+                log.warning(`Non-JSON response from ${label}; retrying in ${waitMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
+                await sleep(waitMs);
+            }
+            continue;
+        }
+
+        const items = Array.isArray(json?.items) ? json.items : [];
+
+        if (items.length === 0) {
+            const reportedZero = toNumber(json?.translatedTotalCount, null) === 0 || toNumber(json?.totalCount, null) === 0;
+            if (reportedZero || attempt >= MAX_RETRIES) {
+                return { json, items, empty: true, retryCount };
+            }
+            retryCount += 1;
+            lastError = new Error(`${label} returned empty items (possible transient throttling).`);
+            const waitMs = RETRY_BASE_DELAY_MS * (2 ** (attempt - 1));
+            log.warning(`Empty response from ${label}; retrying in ${waitMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
+            await sleep(waitMs);
+            continue;
+        }
+
+        return { json, items, empty: false, retryCount };
     }
 
-    throw lastError ?? new Error(`Failed to fetch ${label}.`);
+    return { error: lastError ?? new Error(`Failed to fetch ${label}.`), retryCount };
 }
 
 function extractImageUrls(images) {
@@ -369,11 +423,6 @@ if (!Number.isInteger(maxReviewsLimit) || maxReviewsLimit < 0) {
     throw new Error('maxReviews must be an integer greater than or equal to 0.');
 }
 
-const pageSizeLimit = Number(pageSize);
-if (!Number.isInteger(pageSizeLimit) || pageSizeLimit < 1) {
-    throw new Error('pageSize must be an integer greater than or equal to 1.');
-}
-
 const selectedSortId = resolveSortId(sortId, sortBy);
 const selectedLanguageCode = toText(languageCode) || DEFAULT_LANGUAGE_CODE;
 const selectedCountryCode = toText(countryCode);
@@ -388,7 +437,7 @@ log.info('Starting iHerb Reviews scraper (API via got-scraping)', {
     productId: resolvedProductId,
     productUrl: normalizedProductUrl,
     maxReviews: maxReviewsLimit,
-    pageSize: pageSizeLimit,
+    pageSize: PAGE_SIZE,
     sortId: selectedSortId,
     languageCode: selectedLanguageCode,
     countryCode: selectedCountryCode,
@@ -402,10 +451,16 @@ let totalReviewsScraped = 0;
 let pagesFetched = 0;
 let duplicatesSkipped = 0;
 let invalidReviewsSkipped = 0;
+let recoveryRetries = 0;
+let adaptiveDelayMs = 0;
+let consecutivePartialPages = 0;
+let noProgressPages = 0;
+let effectivePageSize = 0;
 let finalErrorMessage = null;
 let countryReviews = [];
 let totalReviewCount = null;
 let translatedTotalCount = null;
+let effectiveAvailableCount = null;
 
 function capturePageMetadata(pageData) {
     if (totalReviewCount === null && pageData?.totalCount !== undefined) {
@@ -413,6 +468,10 @@ function capturePageMetadata(pageData) {
     }
     if (translatedTotalCount === null && pageData?.translatedTotalCount !== undefined) {
         translatedTotalCount = toNumber(pageData.translatedTotalCount, null);
+    }
+
+    if (translatedTotalCount !== null || totalReviewCount !== null) {
+        effectiveAvailableCount = translatedTotalCount ?? totalReviewCount;
     }
 
     if (Array.isArray(pageData?.countryReviews) && countryReviews.length === 0) {
@@ -460,11 +519,15 @@ function processReviewItems(items, pageNumber) {
 try {
     let pageNumber = 1;
 
+    const getProxyUrl = proxyConfiguration
+        ? async () => proxyConfiguration.newUrl()
+        : null;
+
     while (totalReviewsScraped < wantedReviews) {
         const endpoint = buildReviewsEndpoint({
             pid: resolvedProductId,
             page: pageNumber,
-            size: pageSizeLimit,
+            size: PAGE_SIZE,
             selectedSortId,
             selectedLanguageCode,
             selectedCountryCode,
@@ -472,31 +535,34 @@ try {
             includeCountryReview: selectedWithCountryReview,
         });
 
-        let proxyUrl;
-        if (proxyConfiguration) {
-            proxyUrl = await proxyConfiguration.newUrl();
-        }
+        const result = await fetchPageWithRecovery({
+            endpoint,
+            getProxyUrl,
+            label: `Review API page ${pageNumber}`,
+        });
 
-        let pageData;
-        try {
-            pageData = await fetchWithRetry({
-                endpoint,
-                proxyUrl,
-                label: `Review API page ${pageNumber}`,
-            });
-        } catch (error) {
-            finalErrorMessage = error?.message ?? String(error);
+        recoveryRetries += result.retryCount;
+
+        if (result.error) {
+            finalErrorMessage = result.error?.message ?? String(result.error);
             log.warning(`Review pagination stopped on page ${pageNumber}`, { error: finalErrorMessage });
             break;
         }
 
         pagesFetched += 1;
-        capturePageMetadata(pageData);
+        capturePageMetadata(result.json);
 
-        const items = Array.isArray(pageData?.items) ? pageData.items : [];
-        if (items.length === 0) {
-            log.info(`No reviews returned on page ${pageNumber}; stopping pagination.`);
+        const { items, empty } = result;
+        if (empty) {
+            log.info(`No reviews returned on page ${pageNumber} after retries; stopping pagination.`);
             break;
+        }
+
+        // The iHerb API caps `limit` at 20, so PAGE_SIZE is fixed internally.
+        // Adopt the largest batch actually observed so full batches are not mistaken
+        // for throttled partial pages.
+        if (items.length > effectivePageSize) {
+            effectivePageSize = items.length;
         }
 
         const normalized = processReviewItems(items, pageNumber);
@@ -504,6 +570,11 @@ try {
         if (normalized.length > 0) {
             await Actor.pushData(normalized);
             totalReviewsScraped += normalized.length;
+        }
+
+        const isFullPage = effectivePageSize > 0 && items.length >= effectivePageSize;
+        if (isFullPage) {
+            consecutivePartialPages = 0;
         }
 
         log.info(`Review page ${pageNumber} processed`, {
@@ -515,10 +586,34 @@ try {
         });
 
         const reachedReviewsLimit = totalReviewsScraped >= wantedReviews;
-        const reachedEndByPageSize = items.length < pageSizeLimit;
-        if (reachedReviewsLimit || reachedEndByPageSize) break;
+        const reachedReportedTotal = effectiveAvailableCount !== null && totalReviewsScraped >= effectiveAvailableCount;
+        if (reachedReviewsLimit || reachedReportedTotal) break;
+
+        if (!isFullPage) {
+            consecutivePartialPages += 1;
+            adaptiveDelayMs = Math.min(adaptiveDelayMs + ADAPTIVE_DELAY_STEP_MS, ADAPTIVE_DELAY_MAX_MS);
+            if (consecutivePartialPages >= MAX_CONSECUTIVE_PARTIAL_PAGES) {
+                finalErrorMessage = `Review API kept returning partial pages (${consecutivePartialPages} consecutive); possible throttling.`;
+                log.warning(`Review pagination stopped on page ${pageNumber}`, { error: finalErrorMessage });
+                break;
+            }
+        } else {
+            adaptiveDelayMs = Math.max(0, adaptiveDelayMs - 500);
+        }
+
+        if (items.length > 0 && normalized.length === 0) {
+            noProgressPages += 1;
+        } else {
+            noProgressPages = 0;
+        }
+        if (noProgressPages >= MAX_NO_PROGRESS_PAGES) {
+            finalErrorMessage = `No new unique reviews for ${noProgressPages} consecutive pages; pagination not advancing.`;
+            log.warning(`Review pagination stopped on page ${pageNumber}`, { error: finalErrorMessage });
+            break;
+        }
 
         await sleepRandom(MIN_PAGE_DELAY_MS, MAX_PAGE_DELAY_MS);
+        if (adaptiveDelayMs > 0) await sleep(adaptiveDelayMs);
         pageNumber += 1;
     }
 } catch (error) {
@@ -545,13 +640,14 @@ const statistics = stripEmptyFields({
     productId: resolvedProductId,
     productUrl: normalizedProductUrl,
     sortId: selectedSortId,
-    pageSize: pageSizeLimit,
+    pageSize: PAGE_SIZE,
     languageCode: selectedLanguageCode,
     countryCode: selectedCountryCode,
     withImagesOnly: selectedWithImagesOnly,
     withCountryReview: selectedWithCountryReview,
     totalReviewCount,
     translatedTotalCount,
+    recoveryRetries,
     countryReviewBuckets: countryReviews,
     lastError: finalErrorMessage ?? '',
     duration: `${durationSec} seconds`,

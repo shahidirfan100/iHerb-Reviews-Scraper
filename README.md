@@ -33,7 +33,7 @@ iHerb Reviews Scraper collects customer reviews from iHerb product pages and del
 1. Open the Actor on Apify Store.
 2. Add an iHerb product URL or numeric product ID.
 3. Set the maximum number of reviews to collect.
-4. Optionally set sort order, language, country, or image-only filters.
+4. Optionally set sort order (`sortBy`/`sortId`), language, country, image-only, or country-review breakdown options.
 5. Run the Actor.
 6. Download the dataset or connect it to your workflow.
 
@@ -44,13 +44,13 @@ iHerb Reviews Scraper collects customer reviews from iHerb product pages and del
 | `productUrl` | String | No | Example iHerb product URL | iHerb product URL. The product ID is extracted automatically from supported URL formats. |
 | `productId` | String | No | `""` | Numeric iHerb product ID. Takes priority over URL-based extraction when both are provided. |
 | `maxReviews` | Integer | No | `20` | Maximum number of reviews to collect. Use `0` for no limit. |
-| `pageSize` | Integer | No | `20` | Reviews fetched per API page. |
 | `sortBy` | String | No | `mostRecent` | Sort mode: `mostRecent`, `newest`, `oldest`, `helpful`, `highestRating`, or `lowestRating`. |
-| `sortId` | Integer | No | `6` | Numeric sort ID override when `sortBy` is not sufficient. |
-| `languageCode` | String | No | `en-US` | Language filter for reviews (IETF language tag). |
+| `sortId` | Integer | No | `(empty)` | Numeric sort ID override used by the iHerb review API. Takes priority over `sortBy`. Leave empty to use `sortBy`. Known values: 1 = highest rating, 2 = lowest rating, 4 = most helpful, 6 = most recent, 7 = oldest. |
+| `languageCode` | String | No | `en-US` | Language filter for reviews (IETF language tag). If left empty, defaults to `en-US`. |
 | `countryCode` | String | No | `(empty)` | Country filter for reviews (ISO country code). |
 | `withImagesOnly` | Boolean | No | `false` | When `true`, only collect reviews that include images. |
-| `proxyConfiguration` | Object | No | Apify Proxy enabled | Proxy settings for your run environment. |
+| `withCountryReview` | Boolean | No | `false` | When `true`, include the country-level review breakdown from the API. |
+| `proxyConfiguration` | Object | No | Residential proxy enabled | Proxy settings for your run environment. Apify residential proxy is enabled by default for smoother runs. |
 
 ## Output Data
 
@@ -197,7 +197,7 @@ The Actor extracts the product ID from URLs that contain extra query parameters 
 ## Tips for Best Results
 
 - Start with `maxReviews: 20` to validate the output shape before scaling up.
-- Use `pageSize: 20` for stable runs. Increase gradually only when you need larger batches.
+- Reviews are fetched in batches of 20 per API page (the iHerb review API caps the page size), so the Actor pages automatically until `maxReviews` is reached.
 - Provide either `productUrl` or `productId`. Both are not required.
 - Messy product URLs with extra query parameters or surrounding text are normalized automatically.
 - Schedule regular runs to monitor sentiment shifts and compare review snapshots over time.
