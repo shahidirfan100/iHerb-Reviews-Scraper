@@ -2,19 +2,20 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import { Actor } from 'apify';
-import { gotScraping } from 'got-scraping';
+import { Impit } from 'impit';
 
 import log from '@apify/log';
 
 await Actor.init();
 
-const API_HOST = 'https://pk.iherb.com';
+const DEFAULT_API_HOST = 'https://pk.iherb.com';
 const MAX_RETRIES = 3;
 const API_TIMEOUT_MS = 30000;
 const DEFAULT_SORT_ID = 6;
-const DEFAULT_LANGUAGE_CODE = 'en-US';
+const DEFAULT_LANGUAGE_CODE = '';
 const DEFAULT_COUNTRY_CODE = '';
 const DEFAULT_WITH_IMAGES_ONLY = false;
+const DEFAULT_IS_SHOW_TRANSLATED = false;
 const PAGE_SIZE = 20;
 const MIN_PAGE_DELAY_MS = 300;
 const MAX_PAGE_DELAY_MS = 900;
@@ -24,6 +25,8 @@ const ADAPTIVE_DELAY_STEP_MS = 2500;
 const ADAPTIVE_DELAY_MAX_MS = 10000;
 const MAX_CONSECUTIVE_PARTIAL_PAGES = 3;
 const MAX_NO_PROGRESS_PAGES = 5;
+
+let httpClient;
 
 const SORT_ID_MAP = {
     mostRecent: 6,
@@ -35,10 +38,6 @@ const SORT_ID_MAP = {
     lowestRating: 2,
 };
 
-const API_HEADERS = {
-    accept: 'application/json',
-    'user-agent': 'okhttp/4.12.0',
-};
 
 async function loadInput() {
     const runtimeInput = (await Actor.getInput()) ?? {};
@@ -67,6 +66,7 @@ const {
     countryCode = DEFAULT_COUNTRY_CODE,
     withImagesOnly = DEFAULT_WITH_IMAGES_ONLY,
     withCountryReview = false,
+    isShowTranslated,
     proxyConfiguration: proxyConfig = { useApifyProxy: false },
 } = input;
 
@@ -88,6 +88,30 @@ function toBoolean(value) {
         if (normalized === 'false') return false;
     }
     return Boolean(value);
+}
+
+function normalizeLanguageCode(value) {
+    return toText(value).replace('_', '-').toLowerCase();
+}
+
+function normalizeCountryCode(value) {
+    return toText(value).toUpperCase();
+}
+
+function languageMatchesFilter(reviewLanguageCode, selectedLanguageCode) {
+    const expected = normalizeLanguageCode(selectedLanguageCode);
+    if (!expected) return true;
+
+    const actual = normalizeLanguageCode(reviewLanguageCode);
+    if (!actual) return false;
+    if (expected.includes('-')) return actual === expected;
+    return actual.split('-')[0] === expected;
+}
+
+function countryMatchesFilter(reviewCountryCode, selectedCountryCode) {
+    const expected = normalizeCountryCode(selectedCountryCode);
+    if (!expected) return true;
+    return normalizeCountryCode(reviewCountryCode) === expected;
 }
 
 function stripEmptyFields(record) {
@@ -137,6 +161,54 @@ function extractFirstUrlCandidate(textValue) {
     if (!match?.[0]) return '';
 
     return match[0].replace(/[),.;]+$/g, '');
+}
+
+function parseIHerbUrl(urlInput) {
+    const candidate = extractFirstUrlCandidate(urlInput) || toText(urlInput);
+    if (!candidate || !/^https?:\/\//i.test(candidate)) return null;
+
+    try {
+        const parsed = new URL(candidate);
+        if (!/iherb\.com$/i.test(parsed.hostname)) return null;
+        return parsed;
+    } catch {
+        return null;
+    }
+}
+
+function getQueryValue(searchParams, names) {
+    const normalizedNames = new Set(names.map((name) => name.toLowerCase()));
+    for (const [key, value] of searchParams.entries()) {
+        if (normalizedNames.has(key.toLowerCase())) return value;
+    }
+    return null;
+}
+
+function extractUrlOptions(urlInput) {
+    const parsed = parseIHerbUrl(urlInput);
+    if (!parsed) {
+        return {
+            apiHost: DEFAULT_API_HOST,
+            languageCode: null,
+            countryCode: null,
+            sortId: null,
+            sortBy: null,
+            isShowTranslated: null,
+            withImagesOnly: null,
+            withCountryReview: null,
+        };
+    }
+
+    return {
+        apiHost: `https://${parsed.hostname}`,
+        languageCode: getQueryValue(parsed.searchParams, ['languageCode', 'language', 'lc', 'lang']),
+        countryCode: getQueryValue(parsed.searchParams, ['countryCode', 'country', 'cc']),
+        sortId: getQueryValue(parsed.searchParams, ['sortId', 'sort']),
+        sortBy: getQueryValue(parsed.searchParams, ['sortBy']),
+        isShowTranslated: getQueryValue(parsed.searchParams, ['isShowTranslated', 'showTranslated']),
+        withImagesOnly: getQueryValue(parsed.searchParams, ['withImagesOnly', 'imagesOnly']),
+        withCountryReview: getQueryValue(parsed.searchParams, ['withCountryReview']),
+    };
 }
 
 function extractNumbersFromText(textValue) {
@@ -200,7 +272,7 @@ function normalizeProductUrl(urlInput, resolvedId, idInput) {
     return 'https://www.iherb.com/';
 }
 
-function buildReviewsEndpoint({ pid, page, size, selectedSortId, selectedLanguageCode, selectedCountryCode, imagesOnly, includeCountryReview }) {
+function buildReviewsEndpoint({ apiHost, pid, page, size, selectedSortId, selectedLanguageCode, selectedCountryCode, imagesOnly, showTranslated, includeCountryReview }) {
     const params = new URLSearchParams({
         pid,
         page: String(page),
@@ -210,12 +282,12 @@ function buildReviewsEndpoint({ pid, page, size, selectedSortId, selectedLanguag
         textToSearch: '',
         limit: String(size),
         withImagesOnly: String(imagesOnly),
-        isShowTranslated: 'true',
+        isShowTranslated: String(showTranslated),
         withoutDefaultTitle: 'true',
         withCountryReview: String(includeCountryReview),
     });
 
-    return `${API_HOST}/ugc/api/review/v2/search?${params.toString()}`;
+    return `${apiHost}/ugc/api/review/v2/search?${params.toString()}`;
 }
 
 async function sleep(ms) {
@@ -229,47 +301,108 @@ async function sleepRandom(minMs, maxMs) {
     await sleep(randomDelay);
 }
 
-async function rawFetch({ endpoint, proxyUrl }) {
-    const response = await gotScraping.get(endpoint, {
-        headers: API_HEADERS,
-        proxyUrl,
-        http2: false,
-        useHeaderGenerator: false,
-        timeout: { request: API_TIMEOUT_MS },
-        retry: { limit: 0 },
+function createHttpClient(proxyUrl) {
+    return new Impit({
+        browser: 'chrome',
+        ignoreTlsErrors: true,
+        ...(proxyUrl && { proxyUrl }),
+    });
+}
+
+function getRetryAfterDelay(headers, fallbackMs) {
+    const retryAfterValue = typeof headers?.get === 'function'
+        ? headers.get('retry-after')
+        : headers?.['retry-after'];
+    if (!retryAfterValue) return fallbackMs;
+
+    const retryAfterSeconds = Number(retryAfterValue);
+    if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0) {
+        return Math.min(retryAfterSeconds * 1000, ADAPTIVE_DELAY_MAX_MS);
+    }
+
+    const retryAfterDate = Date.parse(retryAfterValue);
+    if (Number.isFinite(retryAfterDate)) {
+        return Math.min(Math.max(0, retryAfterDate - Date.now()), ADAPTIVE_DELAY_MAX_MS);
+    }
+
+    return fallbackMs;
+}
+
+async function refreshClientForRecovery(refreshClient, label) {
+    if (!refreshClient) return;
+
+    try {
+        await refreshClient();
+    } catch (error) {
+        log.warning(`Could not refresh the request session for ${label}; retrying the current session`, {
+            error: error?.message,
+        });
+    }
+}
+
+async function rawFetch({ endpoint }) {
+    const response = await httpClient.fetch(endpoint, {
+        signal: AbortSignal.timeout(API_TIMEOUT_MS),
     });
 
-    return typeof response.body === 'string' ? response.body : JSON.stringify(response.body);
+    return {
+        body: await response.text(),
+        headers: response.headers,
+        statusCode: response.status,
+    };
 }
 
 function isBlockResponse(body) {
-    return typeof body === 'string'
-        && (body.includes('blockScript') || body.includes('jsClientSrc') || body.includes('altBlockScript'));
+    if (typeof body !== 'string') return false;
+    const normalizedBody = body.toLowerCase();
+    return normalizedBody.includes('blockscript')
+        || normalizedBody.includes('jsclientsrc')
+        || normalizedBody.includes('altblockscript');
 }
 
-async function fetchPageWithRecovery({ endpoint, getProxyUrl, label }) {
+async function fetchPageWithRecovery({ endpoint, label, refreshClient }) {
     let lastError = null;
     let retryCount = 0;
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-        let proxyUrl;
-        if (getProxyUrl) {
-            proxyUrl = await getProxyUrl();
-        }
-
-        let body;
+        let response;
         try {
-            body = await rawFetch({ endpoint, proxyUrl });
+            response = await rawFetch({ endpoint });
         } catch (error) {
             lastError = error;
-            if (attempt < MAX_RETRIES) {
-                retryCount += 1;
-                const waitMs = RETRY_BASE_DELAY_MS * (2 ** (attempt - 1));
-                log.warning(`Retrying ${label} in ${waitMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`, {
-                    error: error?.message,
-                });
-                await sleep(waitMs);
+            const isTemporaryError = ['ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN'].includes(error?.code)
+                || ['AbortError', 'TimeoutError'].includes(error?.name);
+            if (!isTemporaryError || attempt >= MAX_RETRIES) {
+                return { error: lastError, retryCount };
             }
+
+            retryCount += 1;
+            await refreshClientForRecovery(refreshClient, label);
+            const waitMs = RETRY_BASE_DELAY_MS * (2 ** (attempt - 1));
+            log.warning(`Retrying ${label} in ${waitMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`, {
+                error: error?.message,
+            });
+            await sleep(waitMs);
+            continue;
+        }
+
+        const { body, headers, statusCode } = response;
+        const isTemporaryStatus = statusCode === 429 || statusCode >= 500;
+        const isBlockedStatus = statusCode === 403 || isBlockResponse(body);
+        if (statusCode < 200 || statusCode >= 300) {
+            lastError = new Error(`${label} returned HTTP ${statusCode}.`);
+            if ((!isTemporaryStatus && !isBlockedStatus) || attempt >= MAX_RETRIES) {
+                return { error: lastError, retryCount };
+            }
+
+            retryCount += 1;
+            if (isBlockedStatus) await refreshClientForRecovery(refreshClient, label);
+            const fallbackDelay = isBlockedStatus
+                ? BLOCK_RETRY_BASE_DELAY_MS * (2 ** (attempt - 1))
+                : RETRY_BASE_DELAY_MS * (2 ** (attempt - 1));
+            const waitMs = getRetryAfterDelay(headers, fallbackDelay);
+            log.warning(`HTTP ${statusCode} from ${label}; ${isBlockedStatus ? 'refreshing session and ' : ''}retrying in ${waitMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
+            await sleep(waitMs);
             continue;
         }
 
@@ -277,8 +410,9 @@ async function fetchPageWithRecovery({ endpoint, getProxyUrl, label }) {
             lastError = new Error(`${label} blocked by anti-bot protection (PerimeterX).`);
             if (attempt < MAX_RETRIES) {
                 retryCount += 1;
+                await refreshClientForRecovery(refreshClient, label);
                 const waitMs = BLOCK_RETRY_BASE_DELAY_MS * (2 ** (attempt - 1));
-                log.warning(`Anti-bot block on ${label}; retrying with fresh proxy in ${waitMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
+                log.warning(`Anti-bot block on ${label}; refreshing session and retrying in ${waitMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
                 await sleep(waitMs);
             }
             continue;
@@ -291,8 +425,9 @@ async function fetchPageWithRecovery({ endpoint, getProxyUrl, label }) {
             lastError = new Error(`${label} returned non-JSON response.`);
             if (attempt < MAX_RETRIES) {
                 retryCount += 1;
+                await refreshClientForRecovery(refreshClient, label);
                 const waitMs = RETRY_BASE_DELAY_MS * (2 ** (attempt - 1));
-                log.warning(`Non-JSON response from ${label}; retrying in ${waitMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
+                log.warning(`Non-JSON response from ${label}; refreshing session and retrying in ${waitMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
                 await sleep(waitMs);
             }
             continue;
@@ -307,6 +442,7 @@ async function fetchPageWithRecovery({ endpoint, getProxyUrl, label }) {
             }
             retryCount += 1;
             lastError = new Error(`${label} returned empty items (possible transient throttling).`);
+            await refreshClientForRecovery(refreshClient, label);
             const waitMs = RETRY_BASE_DELAY_MS * (2 ** (attempt - 1));
             log.warning(`Empty response from ${label}; retrying in ${waitMs}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
             await sleep(waitMs);
@@ -413,6 +549,7 @@ function mapReview(review, context) {
     });
 }
 
+const urlOptions = extractUrlOptions(productUrl);
 const resolvedProductId = resolveProductIdFromInput(productId, productUrl);
 if (!resolvedProductId) {
     throw new Error('Missing valid productId. Provide `productId` or a `productUrl` ending with numeric product ID.');
@@ -423,25 +560,44 @@ if (!Number.isInteger(maxReviewsLimit) || maxReviewsLimit < 0) {
     throw new Error('maxReviews must be an integer greater than or equal to 0.');
 }
 
-const selectedSortId = resolveSortId(sortId, sortBy);
-const selectedLanguageCode = toText(languageCode) || DEFAULT_LANGUAGE_CODE;
-const selectedCountryCode = toText(countryCode);
-const selectedWithImagesOnly = toBoolean(withImagesOnly);
-const selectedWithCountryReview = toBoolean(withCountryReview);
+const selectedSortId = resolveSortId(
+    toText(sortId) ? sortId : urlOptions.sortId,
+    toText(sortBy) ? sortBy : urlOptions.sortBy,
+);
+const selectedLanguageCode = toText(languageCode) || toText(urlOptions.languageCode);
+const selectedCountryCode = normalizeCountryCode(toText(countryCode) || toText(urlOptions.countryCode));
+const selectedWithImagesOnly = urlOptions.withImagesOnly === null
+    ? toBoolean(withImagesOnly)
+    : toBoolean(urlOptions.withImagesOnly);
+const selectedWithCountryReview = urlOptions.withCountryReview === null
+    ? toBoolean(withCountryReview)
+    : toBoolean(urlOptions.withCountryReview);
+const selectedShowTranslated = urlOptions.isShowTranslated === null
+    ? toBoolean(isShowTranslated ?? DEFAULT_IS_SHOW_TRANSLATED)
+    : toBoolean(urlOptions.isShowTranslated);
 const normalizedProductUrl = normalizeProductUrl(productUrl, resolvedProductId, productId);
+const { apiHost } = urlOptions;
 const proxyConfiguration = await createOptionalProxyConfiguration(proxyConfig);
+const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl() : undefined;
+httpClient = createHttpClient(proxyUrl);
+const refreshClient = async () => {
+    const nextProxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl() : undefined;
+    httpClient = createHttpClient(nextProxyUrl);
+};
 const runStartedAt = Date.now();
 const wantedReviews = maxReviewsLimit === 0 ? Number.POSITIVE_INFINITY : maxReviewsLimit;
 
-log.info('Starting iHerb Reviews scraper (API via got-scraping)', {
+log.info('Starting iHerb Reviews scraper', {
     productId: resolvedProductId,
     productUrl: normalizedProductUrl,
+    apiHost,
     maxReviews: maxReviewsLimit,
     pageSize: PAGE_SIZE,
     sortId: selectedSortId,
-    languageCode: selectedLanguageCode,
-    countryCode: selectedCountryCode,
+    languageCode: selectedLanguageCode || '(unfiltered)',
+    countryCode: selectedCountryCode || '(unfiltered)',
     withImagesOnly: selectedWithImagesOnly,
+    isShowTranslated: selectedShowTranslated,
     withCountryReview: selectedWithCountryReview,
     usesProxy: Boolean(proxyConfiguration),
 });
@@ -451,6 +607,8 @@ let totalReviewsScraped = 0;
 let pagesFetched = 0;
 let duplicatesSkipped = 0;
 let invalidReviewsSkipped = 0;
+let languageFiltered = 0;
+let countryFiltered = 0;
 let recoveryRetries = 0;
 let adaptiveDelayMs = 0;
 let consecutivePartialPages = 0;
@@ -470,8 +628,10 @@ function capturePageMetadata(pageData) {
         translatedTotalCount = toNumber(pageData.translatedTotalCount, null);
     }
 
-    if (translatedTotalCount !== null || totalReviewCount !== null) {
-        effectiveAvailableCount = translatedTotalCount ?? totalReviewCount;
+    if (totalReviewCount !== null && totalReviewCount > 0) {
+        effectiveAvailableCount = totalReviewCount;
+    } else if (translatedTotalCount !== null && translatedTotalCount > 0) {
+        effectiveAvailableCount = translatedTotalCount;
     }
 
     if (Array.isArray(pageData?.countryReviews) && countryReviews.length === 0) {
@@ -489,6 +649,15 @@ function processReviewItems(items, pageNumber) {
     const normalized = [];
 
     for (const rawReview of items) {
+        if (!languageMatchesFilter(rawReview?.languageCode, selectedLanguageCode)) {
+            languageFiltered += 1;
+            continue;
+        }
+        if (!countryMatchesFilter(rawReview?.countryCode, selectedCountryCode)) {
+            countryFiltered += 1;
+            continue;
+        }
+
         const mapped = mapReview(rawReview, {
             productId: resolvedProductId,
             productUrl: normalizedProductUrl,
@@ -519,12 +688,9 @@ function processReviewItems(items, pageNumber) {
 try {
     let pageNumber = 1;
 
-    const getProxyUrl = proxyConfiguration
-        ? async () => proxyConfiguration.newUrl()
-        : null;
-
     while (totalReviewsScraped < wantedReviews) {
         const endpoint = buildReviewsEndpoint({
+            apiHost,
             pid: resolvedProductId,
             page: pageNumber,
             size: PAGE_SIZE,
@@ -532,13 +698,14 @@ try {
             selectedLanguageCode,
             selectedCountryCode,
             imagesOnly: selectedWithImagesOnly,
+            showTranslated: selectedShowTranslated,
             includeCountryReview: selectedWithCountryReview,
         });
 
         const result = await fetchPageWithRecovery({
             endpoint,
-            getProxyUrl,
             label: `Review API page ${pageNumber}`,
+            refreshClient,
         });
 
         recoveryRetries += result.retryCount;
@@ -582,6 +749,8 @@ try {
             savedItems: normalized.length,
             duplicatesSkipped,
             invalidReviewsSkipped,
+            languageFiltered,
+            countryFiltered,
             totalReviewsScraped,
         });
 
@@ -635,8 +804,8 @@ const statistics = stripEmptyFields({
     pagesFetched,
     duplicatesSkipped,
     invalidReviewsSkipped,
-    extractionMethod: 'iHerb reviews API (got-scraping, okhttp headers)',
-    endpoint: `${API_HOST}/ugc/api/review/v2/search`,
+    extractionMethod: 'iHerb reviews API',
+    endpoint: `${apiHost}/ugc/api/review/v2/search`,
     productId: resolvedProductId,
     productUrl: normalizedProductUrl,
     sortId: selectedSortId,
@@ -644,7 +813,10 @@ const statistics = stripEmptyFields({
     languageCode: selectedLanguageCode,
     countryCode: selectedCountryCode,
     withImagesOnly: selectedWithImagesOnly,
+    isShowTranslated: selectedShowTranslated,
     withCountryReview: selectedWithCountryReview,
+    languageFiltered,
+    countryFiltered,
     totalReviewCount,
     translatedTotalCount,
     recoveryRetries,

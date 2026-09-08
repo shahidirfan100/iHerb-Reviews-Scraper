@@ -52,18 +52,23 @@
         "languageCode": {
             "title": "Language Code",
             "type": "string",
-            "description": "IETF language tag to filter reviews by language (e.g. en-US). If left empty, defaults to en-US.",
+            "description": "Optional IETF language tag to filter reviews by language (e.g. ru-RU). Leave empty to keep the source review language and return reviews in all languages.",
             "editor": "textfield",
-            "default": "en-US",
-            "prefill": "en-US"
+            "default": ""
         },
         "countryCode": {
             "title": "Country Code",
             "type": "string",
-            "description": "ISO country code to filter reviews by reviewer country (e.g. US, PK). Leave empty for all countries.",
+            "description": "Optional ISO country code to filter reviews by reviewer country (e.g. US, PK). Leave empty for all countries.",
             "editor": "textfield",
-            "default": "",
-            "prefill": ""
+            "default": ""
+        },
+        "isShowTranslated": {
+            "title": "Show Translated Review Text",
+            "type": "boolean",
+            "description": "When enabled, request translated review text. Disabled by default so unfiltered runs do not force reviews into English.",
+            "default": false,
+            "prefill": false
         },
         "withImagesOnly": {
             "title": "Only Reviews With Images",

@@ -8,7 +8,9 @@
 - Field count: 33+ review-related fields
 
 ## Working query shape
-`/ugc/api/review/v2/search?pid=<productId>&page=<page>&sortId=<sortId>&cc=<countryCode>&lc=<languageCode>&textToSearch=&limit=<pageSize>&withImagesOnly=<bool>&isShowTranslated=true&withoutDefaultTitle=true&withCountryReview=true`
+`/ugc/api/review/v2/search?pid=<productId>&page=<page>&sortId=<sortId>&cc=<countryCode>&lc=<languageCode>&textToSearch=&limit=<pageSize>&withImagesOnly=<bool>&isShowTranslated=<bool>&withoutDefaultTitle=true&withCountryReview=<bool>`
+
+`cc` and `lc` are optional reviewer-country and review-language filters. When they are empty, the actor does not apply a language or country filter. `isShowTranslated` is disabled by default so source-language review text is preserved; it is enabled only by an explicit input or URL query.
 
 ## Winning access method
 - **User-Agent**: `okhttp/4.12.0` (Android app-style)
@@ -60,3 +62,4 @@
 - No browser warmup or Playwright session required
 - Response includes `nextPageToken` for pagination (sequential, same as page number)
 - Country reviews summary available via `withCountryReview=true` parameter
+- The actor uses the supplied iHerb storefront hostname for the API request and verifies returned `languageCode`/`countryCode` values before saving filtered records

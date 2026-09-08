@@ -46,8 +46,9 @@ iHerb Reviews Scraper collects customer reviews from iHerb product pages and del
 | `maxReviews` | Integer | No | `20` | Maximum number of reviews to collect. Use `0` for no limit. |
 | `sortBy` | String | No | `mostRecent` | Sort mode: `mostRecent`, `newest`, `oldest`, `helpful`, `highestRating`, or `lowestRating`. |
 | `sortId` | Integer | No | `(empty)` | Numeric sort ID override used by the iHerb review API. Takes priority over `sortBy`. Leave empty to use `sortBy`. Known values: 1 = highest rating, 2 = lowest rating, 4 = most helpful, 6 = most recent, 7 = oldest. |
-| `languageCode` | String | No | `en-US` | Language filter for reviews (IETF language tag). If left empty, defaults to `en-US`. |
-| `countryCode` | String | No | `(empty)` | Country filter for reviews (ISO country code). |
+| `languageCode` | String | No | `(empty)` | Optional language filter for reviews (IETF language tag, such as `ru-RU`). Empty means all source languages; reviews are not forced into English. |
+| `countryCode` | String | No | `(empty)` | Optional reviewer-country filter (ISO country code, such as `US` or `PK`). |
+| `isShowTranslated` | Boolean | No | `false` | When `true`, request translated review text. Leave disabled to preserve source-language text. |
 | `withImagesOnly` | Boolean | No | `false` | When `true`, only collect reviews that include images. |
 | `withCountryReview` | Boolean | No | `false` | When `true`, include the country-level review breakdown from the API. |
 | `proxyConfiguration` | Object | No | Residential proxy enabled | Proxy settings for your run environment. Apify residential proxy is enabled by default for smoother runs. |
@@ -130,6 +131,22 @@ Collect English reviews from a specific country with the most helpful sort order
   "countryCode": "US"
 }
 ```
+
+### Russian reviews from a specific country
+
+Use the form fields to request Russian reviews written by reviewers in the United States. The Actor sends both filters to iHerb and verifies the returned records before saving them:
+
+```json
+{
+  "productUrl": "https://pk.iherb.com/r/solaray-vitamin-d3-k2-60-vegcaps/70098?sort=6&isshowtranslated=true",
+  "maxReviews": 20,
+  "languageCode": "ru-RU",
+  "countryCode": "US",
+  "isShowTranslated": false
+}
+```
+
+A product URL may also provide `sort`/`sortId`, `sortBy`, `lc`/`languageCode`, `cc`/`countryCode`, `isshowtranslated`, `withImagesOnly`, and `withCountryReview` query parameters. Explicit form language and country values take precedence over URL values. The example URL itself does not contain a Russian language code, so add `languageCode: "ru-RU"` when Russian-only results are required.
 
 ### Image-only reviews
 
@@ -232,7 +249,11 @@ Set `maxReviews` up to `10000`, or use `0` for no explicit limit.
 
 ### Can I use messy product URLs?
 
-Yes. The Actor auto-detects the product ID from URLs with extra query parameters, tracking codes, or surrounding text.
+Yes. The Actor auto-detects the product ID from URLs with extra query parameters, tracking codes, or surrounding text. The iHerb hostname is also used for the API request, so a supplied country storefront is preserved.
+
+### Will an unfiltered run translate every review to English?
+
+No. Language filtering is opt-in and translation is disabled by default. Set `languageCode` to a full language tag such as `ru-RU` to filter by language, and enable `isShowTranslated` only when translated text is wanted.
 
 ### Why are some fields missing for certain reviews?
 
