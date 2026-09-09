@@ -33,7 +33,7 @@ iHerb Reviews Scraper collects customer reviews from iHerb product pages and del
 1. Open the Actor on Apify Store.
 2. Add an iHerb product URL or numeric product ID.
 3. Set the maximum number of reviews to collect.
-4. Optionally set sort order (`sortBy`/`sortId`), language, country, image-only, or country-review breakdown options.
+4. Optionally set sort order (`sortBy`), language, image-only, or country-review breakdown options.
 5. Run the Actor.
 6. Download the dataset or connect it to your workflow.
 
@@ -44,10 +44,8 @@ iHerb Reviews Scraper collects customer reviews from iHerb product pages and del
 | `productUrl` | String | No | Example iHerb product URL | iHerb product URL. The product ID is extracted automatically from supported URL formats. |
 | `productId` | String | No | `""` | Numeric iHerb product ID. Takes priority over URL-based extraction when both are provided. |
 | `maxReviews` | Integer | No | `20` | Maximum number of reviews to collect. Use `0` for no limit. |
-| `sortBy` | String | No | `mostRecent` | Sort mode: `mostRecent`, `newest`, `oldest`, `helpful`, `highestRating`, or `lowestRating`. |
-| `sortId` | Integer | No | `(empty)` | Numeric sort ID override used by the iHerb review API. Takes priority over `sortBy`. Leave empty to use `sortBy`. Known values: 1 = highest rating, 2 = lowest rating, 4 = most helpful, 6 = most recent, 7 = oldest. |
+| `sortBy` | String | No | `mostRecent` | Sort mode: `mostRecent`, `newest`, `oldest`, `helpful`, `highestRating`, or `lowestRating`. Product URLs may also provide the source `sort` value. |
 | `languageCode` | String | No | `(empty)` | Optional language filter for reviews (IETF language tag, such as `ru-RU`). Empty means all source languages; reviews are not forced into English. |
-| `countryCode` | String | No | `(empty)` | Optional reviewer-country filter (ISO country code, such as `US` or `PK`). |
 | `isShowTranslated` | Boolean | No | `false` | When `true`, request translated review text. Leave disabled to preserve source-language text. |
 | `withImagesOnly` | Boolean | No | `false` | When `true`, only collect reviews that include images. |
 | `withCountryReview` | Boolean | No | `false` | When `true`, include the country-level review breakdown from the API. |
@@ -118,35 +116,21 @@ Run with just the numeric product ID when you do not have a full URL:
 }
 ```
 
-### Filtered by language and country
+### Filtered by language
 
-Collect English reviews from a specific country with the most helpful sort order:
-
-```json
-{
-  "productUrl": "https://pk.iherb.com/pr/california-gold-nutrition-bee-propolis-2x-concentrated-extract-500-mg-90-veggie-caps/61839",
-  "maxReviews": 50,
-  "sortBy": "helpful",
-  "languageCode": "en-US",
-  "countryCode": "US"
-}
-```
-
-### Russian reviews from a specific country
-
-Use the form fields to request Russian reviews written by reviewers in the United States. The Actor sends both filters to iHerb and verifies the returned records before saving them:
+Collect Russian reviews with the most helpful sort order:
 
 ```json
 {
   "productUrl": "https://pk.iherb.com/r/solaray-vitamin-d3-k2-60-vegcaps/70098?sort=6&isshowtranslated=true",
   "maxReviews": 20,
+  "sortBy": "helpful",
   "languageCode": "ru-RU",
-  "countryCode": "US",
   "isShowTranslated": false
 }
 ```
 
-A product URL may also provide `sort`/`sortId`, `sortBy`, `lc`/`languageCode`, `cc`/`countryCode`, `isshowtranslated`, `withImagesOnly`, and `withCountryReview` query parameters. Explicit form language and country values take precedence over URL values. The example URL itself does not contain a Russian language code, so add `languageCode: "ru-RU"` when Russian-only results are required.
+The selected review API supports language filtering, but its country parameter only changes country-breakdown metadata and does not select reviewer rows. The Actor therefore does not expose a country filter that could return incorrect results. `withCountryReview` can still request the API's country-level breakdown. A product URL may provide the source `sort` value, `sortBy`, `lc`/`languageCode`, `isshowtranslated`, `withImagesOnly`, and `withCountryReview` query parameters.
 
 ### Image-only reviews
 
@@ -261,7 +245,7 @@ Not every review includes all optional metadata. Records contain only available 
 
 ### Can I filter reviews by language or country?
 
-Yes. Use `languageCode` and `countryCode` to narrow results by locale.
+Use `languageCode` to filter review language. The selected iHerb review API does not provide a reliable reviewer-country row filter; country values remain available in each output record, and `withCountryReview` returns the API's country-level breakdown metadata.
 
 ### Can I sort reviews by rating or date?
 

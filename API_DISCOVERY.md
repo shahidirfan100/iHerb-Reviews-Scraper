@@ -1,31 +1,33 @@
 ## Selected API
 - Endpoint: https://pk.iherb.com/ugc/api/review/v2/search
 - Method: GET
-- Auth: No static auth token required; anti-bot bypass via Android app-style headers
+- Auth: No static auth token required; anti-bot resilience via Impit browser impersonation
 - Pagination: `page` and optional `pageToken` query params (nextPageToken returned in response)
 - Fields available: `items[]` with review id, title, text, rating, dates, helpful votes, verified purchase, language, country, user profile summary (badge, image, ugc stats), images
 - Fields currently missing in actor: all review-level fields (previous actor was product listings only)
 - Field count: 33+ review-related fields
 
 ## Working query shape
-`/ugc/api/review/v2/search?pid=<productId>&page=<page>&sortId=<sortId>&cc=<countryCode>&lc=<languageCode>&textToSearch=&limit=<pageSize>&withImagesOnly=<bool>&isShowTranslated=<bool>&withoutDefaultTitle=true&withCountryReview=<bool>`
+`/ugc/api/review/v2/search?pid=<productId>&page=<page>&sortId=<sortId>&lc=<languageCode>&textToSearch=&limit=<pageSize>&withImagesOnly=<bool>&isShowTranslated=<bool>&withoutDefaultTitle=true&withCountryReview=<bool>`
 
-`cc` and `lc` are optional reviewer-country and review-language filters. When they are empty, the actor does not apply a language or country filter. `isShowTranslated` is disabled by default so source-language review text is preserved; it is enabled only by an explicit input or URL query.
+`lc` is the supported review-language filter. The endpoint exposes country counts through `countryReviews`, but testing showed that its `cc` parameter does not select reviewer rows: returned items remain from the default country. The actor therefore does not expose `cc` as a reviewer-country filter. `isShowTranslated` is disabled by default so source-language review text is preserved; it is enabled only by an explicit input or URL query.
 
 ## Winning access method
-- **User-Agent**: `okhttp/4.12.0` (Android app-style)
-- **Accept**: `application/json`
-- **HTTP/2**: disabled (`http2: false`)
-- **Header generation**: disabled (`useHeaderGenerator: false`)
-- **Proxy**: Optional (works without proxy on local machine)
-- **No browser warmup needed**: direct HTTP via got-scraping
+- **HTTP client**: Impit `0.14.5`
+- **Primary profile**: `chrome136`
+- **Recovery profiles**: `chrome142`, `firefox135`, and `okhttp4`
+- **TLS errors**: ignored for proxy compatibility
+- **Proxy**: Optional locally; Apify Proxy can rotate on anti-bot responses
+- **Browser warmup**: not required; the endpoint returns direct JSON
 
 ## Why this endpoint won
 - Returns direct JSON review documents
 - Supports stable pagination
 - Includes richer UGC metadata than product listing APIs
 - Works with direct HTTP (no Playwright browser required)
-- Android okhttp header profile bypasses PerimeterX anti-bot protection
+- Tested Impit profiles `chrome125+`, Firefox, and okhttp profiles returned JSON review items
+- Generic `chrome`/older Chrome profiles can receive PerimeterX blocks; recovery rotates only through tested profiles
+- `ios18` produced a native TLS transport error and is not used
 
 ## Rejected candidates
 - `https://pk.iherb.com/ugc/api/product/<pid>/review/summary/v2?languageCode=en-US`
@@ -47,19 +49,23 @@
 | Matches or extends current fields | +10 |
 | **Total** | **100** |
 
-## Header profile test matrix
+## Impit profile test matrix
 
-| Profile | Status | Works? |
+| Profile | Result against review endpoint | Used |
 |---|---|---|
-| iOS Safari | 403 (PerimeterX block) | ❌ |
-| Desktop Chrome | 403 (PerimeterX block) | ❌ |
-| Desktop Firefox | 403 (PerimeterX block) | ❌ |
-| Android okhttp/4.12.0 | 200 (JSON with items) | ✅ |
+| `chrome136` | 200 with JSON items | ✅ primary |
+| `chrome142` | 200 with JSON items | ✅ recovery |
+| `firefox135` | 200 with JSON items | ✅ recovery |
+| `okhttp4` | 200 with JSON items | ✅ recovery |
+| `chrome125`, `chrome131`, `chrome151` | 200 with JSON items | validated |
+| `chrome`, `chrome124` | 403 anti-bot response | not used |
+| `ios18` | Native `ConnectError`/TLS decode failure | not used |
 
 ## Transport notes
-- Direct HTTP via `got-scraping` with `http2: false`, `useHeaderGenerator: false`
-- Android `okhttp/4.12.0` user-agent bypasses PerimiterX protection on `pk.iherb.com`
-- No browser warmup or Playwright session required
+- Direct HTTP uses one reusable Impit client per session; no Playwright browser is required
+- On HTTP 403 or another transient response, the actor rotates the proxy when configured and advances to the next tested Impit profile
+- Retries are finite and cover anti-bot 403, 429, 5xx, timeout, connection, malformed-response, and transient-empty-response cases
 - Response includes `nextPageToken` for pagination (sequential, same as page number)
-- Country reviews summary available via `withCountryReview=true` parameter
-- The actor uses the supplied iHerb storefront hostname for the API request and verifies returned `languageCode`/`countryCode` values before saving filtered records
+- Country reviews summary is available through `withCountryReview=true`
+- The actor uses the supplied iHerb storefront hostname for the request and verifies returned `languageCode` values before saving language-filtered records
+- Reviewer `countryCode` remains part of each output record; country-level counts are available through `withCountryReview=true`, but country-row filtering is not supported by this endpoint

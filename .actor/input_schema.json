@@ -30,7 +30,7 @@
         "sortBy": {
             "title": "Sort Reviews By",
             "type": "string",
-            "description": "Review sort order. Ignored when a numeric `sortId` is provided.",
+            "description": "Review sort order.",
             "editor": "select",
             "enum": [
                 "mostRecent",
@@ -43,12 +43,6 @@
             "default": "mostRecent",
             "prefill": "mostRecent"
         },
-        "sortId": {
-            "title": "Sort ID (Numeric Override)",
-            "type": "integer",
-            "description": "Numeric sort ID override used by the iHerb review API. Takes priority over `sortBy`. Leave empty to use `sortBy`. Known values: 1 = highest rating, 2 = lowest rating, 4 = most helpful, 6 = most recent, 7 = oldest.",
-            "minimum": 1
-        },
         "languageCode": {
             "title": "Language Code",
             "type": "string",
@@ -56,13 +50,7 @@
             "editor": "textfield",
             "default": ""
         },
-        "countryCode": {
-            "title": "Country Code",
-            "type": "string",
-            "description": "Optional ISO country code to filter reviews by reviewer country (e.g. US, PK). Leave empty for all countries.",
-            "editor": "textfield",
-            "default": ""
-        },
+
         "isShowTranslated": {
             "title": "Show Translated Review Text",
             "type": "boolean",

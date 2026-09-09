@@ -13,7 +13,6 @@ const MAX_RETRIES = 3;
 const API_TIMEOUT_MS = 30000;
 const DEFAULT_SORT_ID = 6;
 const DEFAULT_LANGUAGE_CODE = '';
-const DEFAULT_COUNTRY_CODE = '';
 const DEFAULT_WITH_IMAGES_ONLY = false;
 const DEFAULT_IS_SHOW_TRANSLATED = false;
 const PAGE_SIZE = 20;
@@ -25,6 +24,7 @@ const ADAPTIVE_DELAY_STEP_MS = 2500;
 const ADAPTIVE_DELAY_MAX_MS = 10000;
 const MAX_CONSECUTIVE_PARTIAL_PAGES = 3;
 const MAX_NO_PROGRESS_PAGES = 5;
+const IMPIT_BROWSER_PROFILES = ['chrome136', 'chrome142', 'firefox135', 'okhttp4'];
 
 let httpClient;
 
@@ -61,9 +61,7 @@ const {
     productId = '',
     maxReviews = 20,
     sortBy = '',
-    sortId = null,
     languageCode = DEFAULT_LANGUAGE_CODE,
-    countryCode = DEFAULT_COUNTRY_CODE,
     withImagesOnly = DEFAULT_WITH_IMAGES_ONLY,
     withCountryReview = false,
     isShowTranslated,
@@ -94,10 +92,6 @@ function normalizeLanguageCode(value) {
     return toText(value).replace('_', '-').toLowerCase();
 }
 
-function normalizeCountryCode(value) {
-    return toText(value).toUpperCase();
-}
-
 function languageMatchesFilter(reviewLanguageCode, selectedLanguageCode) {
     const expected = normalizeLanguageCode(selectedLanguageCode);
     if (!expected) return true;
@@ -106,12 +100,6 @@ function languageMatchesFilter(reviewLanguageCode, selectedLanguageCode) {
     if (!actual) return false;
     if (expected.includes('-')) return actual === expected;
     return actual.split('-')[0] === expected;
-}
-
-function countryMatchesFilter(reviewCountryCode, selectedCountryCode) {
-    const expected = normalizeCountryCode(selectedCountryCode);
-    if (!expected) return true;
-    return normalizeCountryCode(reviewCountryCode) === expected;
 }
 
 function stripEmptyFields(record) {
@@ -190,7 +178,6 @@ function extractUrlOptions(urlInput) {
         return {
             apiHost: DEFAULT_API_HOST,
             languageCode: null,
-            countryCode: null,
             sortId: null,
             sortBy: null,
             isShowTranslated: null,
@@ -202,7 +189,6 @@ function extractUrlOptions(urlInput) {
     return {
         apiHost: `https://${parsed.hostname}`,
         languageCode: getQueryValue(parsed.searchParams, ['languageCode', 'language', 'lc', 'lang']),
-        countryCode: getQueryValue(parsed.searchParams, ['countryCode', 'country', 'cc']),
         sortId: getQueryValue(parsed.searchParams, ['sortId', 'sort']),
         sortBy: getQueryValue(parsed.searchParams, ['sortBy']),
         isShowTranslated: getQueryValue(parsed.searchParams, ['isShowTranslated', 'showTranslated']),
@@ -272,12 +258,11 @@ function normalizeProductUrl(urlInput, resolvedId, idInput) {
     return 'https://www.iherb.com/';
 }
 
-function buildReviewsEndpoint({ apiHost, pid, page, size, selectedSortId, selectedLanguageCode, selectedCountryCode, imagesOnly, showTranslated, includeCountryReview }) {
+function buildReviewsEndpoint({ apiHost, pid, page, size, selectedSortId, selectedLanguageCode, imagesOnly, showTranslated, includeCountryReview }) {
     const params = new URLSearchParams({
         pid,
         page: String(page),
         sortId: String(selectedSortId),
-        cc: selectedCountryCode,
         lc: selectedLanguageCode,
         textToSearch: '',
         limit: String(size),
@@ -301,9 +286,9 @@ async function sleepRandom(minMs, maxMs) {
     await sleep(randomDelay);
 }
 
-function createHttpClient(proxyUrl) {
+function createHttpClient(proxyUrl, browserProfile) {
     return new Impit({
-        browser: 'chrome',
+        browser: browserProfile,
         ignoreTlsErrors: true,
         ...(proxyUrl && { proxyUrl }),
     });
@@ -561,11 +546,10 @@ if (!Number.isInteger(maxReviewsLimit) || maxReviewsLimit < 0) {
 }
 
 const selectedSortId = resolveSortId(
-    toText(sortId) ? sortId : urlOptions.sortId,
+    urlOptions.sortId,
     toText(sortBy) ? sortBy : urlOptions.sortBy,
 );
 const selectedLanguageCode = toText(languageCode) || toText(urlOptions.languageCode);
-const selectedCountryCode = normalizeCountryCode(toText(countryCode) || toText(urlOptions.countryCode));
 const selectedWithImagesOnly = urlOptions.withImagesOnly === null
     ? toBoolean(withImagesOnly)
     : toBoolean(urlOptions.withImagesOnly);
@@ -579,10 +563,12 @@ const normalizedProductUrl = normalizeProductUrl(productUrl, resolvedProductId, 
 const { apiHost } = urlOptions;
 const proxyConfiguration = await createOptionalProxyConfiguration(proxyConfig);
 const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl() : undefined;
-httpClient = createHttpClient(proxyUrl);
+let browserProfileIndex = 0;
+httpClient = createHttpClient(proxyUrl, IMPIT_BROWSER_PROFILES[browserProfileIndex]);
 const refreshClient = async () => {
     const nextProxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl() : undefined;
-    httpClient = createHttpClient(nextProxyUrl);
+    browserProfileIndex = (browserProfileIndex + 1) % IMPIT_BROWSER_PROFILES.length;
+    httpClient = createHttpClient(nextProxyUrl, IMPIT_BROWSER_PROFILES[browserProfileIndex]);
 };
 const runStartedAt = Date.now();
 const wantedReviews = maxReviewsLimit === 0 ? Number.POSITIVE_INFINITY : maxReviewsLimit;
@@ -595,7 +581,6 @@ log.info('Starting iHerb Reviews scraper', {
     pageSize: PAGE_SIZE,
     sortId: selectedSortId,
     languageCode: selectedLanguageCode || '(unfiltered)',
-    countryCode: selectedCountryCode || '(unfiltered)',
     withImagesOnly: selectedWithImagesOnly,
     isShowTranslated: selectedShowTranslated,
     withCountryReview: selectedWithCountryReview,
@@ -608,7 +593,6 @@ let pagesFetched = 0;
 let duplicatesSkipped = 0;
 let invalidReviewsSkipped = 0;
 let languageFiltered = 0;
-let countryFiltered = 0;
 let recoveryRetries = 0;
 let adaptiveDelayMs = 0;
 let consecutivePartialPages = 0;
@@ -653,11 +637,6 @@ function processReviewItems(items, pageNumber) {
             languageFiltered += 1;
             continue;
         }
-        if (!countryMatchesFilter(rawReview?.countryCode, selectedCountryCode)) {
-            countryFiltered += 1;
-            continue;
-        }
-
         const mapped = mapReview(rawReview, {
             productId: resolvedProductId,
             productUrl: normalizedProductUrl,
@@ -696,7 +675,6 @@ try {
             size: PAGE_SIZE,
             selectedSortId,
             selectedLanguageCode,
-            selectedCountryCode,
             imagesOnly: selectedWithImagesOnly,
             showTranslated: selectedShowTranslated,
             includeCountryReview: selectedWithCountryReview,
@@ -750,7 +728,6 @@ try {
             duplicatesSkipped,
             invalidReviewsSkipped,
             languageFiltered,
-            countryFiltered,
             totalReviewsScraped,
         });
 
@@ -811,12 +788,10 @@ const statistics = stripEmptyFields({
     sortId: selectedSortId,
     pageSize: PAGE_SIZE,
     languageCode: selectedLanguageCode,
-    countryCode: selectedCountryCode,
     withImagesOnly: selectedWithImagesOnly,
     isShowTranslated: selectedShowTranslated,
     withCountryReview: selectedWithCountryReview,
     languageFiltered,
-    countryFiltered,
     totalReviewCount,
     translatedTotalCount,
     recoveryRetries,
