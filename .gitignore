@@ -9,3 +9,4 @@ node_modules
 apify_storage
 storage
 package-lock.json
+/.playwright-mcp
